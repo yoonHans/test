@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="ko">
+    <script type="module">
+        // Import the functions you need from the SDKs you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-analytics.js";
+        import { getDatabase, ref, push, onValue, remove, update, set } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-database.js";
+        // TODO: Add SDKs for Firebase products that you want to use
+        // https://firebase.google.com/docs/web/setup#available-libraries
+      
+        // Your web app's Firebase configuration
+        // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+        const firebaseConfig = {
+          apiKey: "AIzaSyDObdzzfS_oZz7L2xcbLbonaHYHFzphSGY",
+          authDomain: "sysmate-ts.firebaseapp.com",
+          databaseURL: "https://sysmate-ts-default-rtdb.firebaseio.com",
+          projectId: "sysmate-ts",
+          storageBucket: "sysmate-ts.firebasestorage.app",
+          messagingSenderId: "567451419124",
+          appId: "1:567451419124:web:754c752ac454921e9639a1",
+          measurementId: "G-Z07G3FPKLE"
+        };
+      
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+        const db = getDatabase(app);
+
+        // 게시판 데이터
+        let posts = [];
+        let editingKey = null;
+        let editingIndex = null;
+        let selectedPostKey = null; // 선택된 게시글 key
+
+        // 게시글 목록만 렌더링
+        function renderBoardList() {
+          const list = document.getElementById("board-list");
+          list.innerHTML = "";
+          // 최신글이 상단에 오도록 역순 정렬
+          const displayPosts = [...posts].reverse();
+          displayPosts.forEach((post, index) => {
+            const dateStr = post.date ? new Date(post.date).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+            const commentCount = post.comments ? post.comments.length : 0;
+            // 본문 미리보기(30자 이내, 줄바꿈 제거)
+            let preview = post.content ? post.content.replace(/\n/g, ' ').replace(/\r/g, '').slice(0, 30) : '';
+            if (post.content && post.content.length > 30) preview += '...';
+            const li = document.createElement("li");
+            li.style.cursor = "pointer";
+            li.innerHTML = `
+              <div style="display:flex;align-items:center;gap:20px;padding:10px 0;border-bottom:1px solid #333;">
+                <span style="width:40px;text-align:center;">${index + 1}</span>
+                <span style="width:120px;">${post.author}</span>
+                <span style="flex:1;min-width:0;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${preview}</span>
+                <span style="width:180px;">${dateStr}</span>
+                <span style="width:80px;">조회수: ${post.views || 0}</span>
+                <span style="width:80px;">댓글: ${commentCount}</span>
+              </div>
+            `;
+            li.onclick = function(e) {
+              e.stopPropagation();
+              showPostDetail(post.key, li, posts.findIndex(p => p.key === post.key));
+            };
+            list.appendChild(li);
+            // 상세가 열려있으면 상세 div 추가
+            if (selectedPostKey === post.key) {
+              const detailLi = document.createElement("li");
+              detailLi.style.background = "#232323";
+              detailLi.style.padding = "0 10px 10px 10px";
+              detailLi.colSpan = 6;
+              detailLi.appendChild(renderBoardDetailInline(post, posts.findIndex(p => p.key === post.key)));
+              list.appendChild(detailLi);
+            }
+          });
+        }
+
+        // 상세 인라인 렌더링 함수
+        function renderBoardDetailInline(post, index) {
+          const detailDiv = document.createElement("div");
+          const dateStr = post.date ? new Date(post.date).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+          let postContentHtml = '';
+          if (editingKey === post.key && editingIndex === index) {
+            postContentHtml = `
+              <textarea id="edit-content-${index}" style="width:100%;padding:10px;background-color:#222;color:#fff;border:1px solid #555;border-radius:5px;">${post.content}</textarea>
+              <input type="password" id="edit-password-${index}" placeholder="비밀번호" style="padding:5px;width:200px;margin-top:5px;background-color:#2a2a2a;color:#fff;border:1px solid #555;border-radius:5px;">
+              <div style="margin-top:10px;">
+                <button onclick="saveEditPost('${post.key}', ${index})" style="background-color:#4CAF50;color:white;padding:5px 10px;border:none;border-radius:5px;">저장</button>
+                <button onclick="cancelEditPost()" style="background-color:#888;color:white;padding:5px 10px;border:none;border-radius:5px;margin-left:5px;">취소</button>
+              </div>
+            `;
+          } else {
+            postContentHtml = `<div style="margin-top: 10px; white-space: pre-line;">${post.content}</div>`;
+          }
+          // 댓글 입력 폼
+          const commentForm = `
+            <div style="margin-top:10px; margin-bottom:10px;">
+              <input type="text" id="comment-author-${index}" placeholder="댓글 작성자" style="padding:5px; width:100px; margin-right:5px; background-color:#2a2a2a; color:#fff; border:1px solid #555; border-radius:5px;">
+              <input type="password" id="comment-password-${index}" placeholder="비밀번호" style="padding:5px; width:100px; margin-right:5px; background-color:#2a2a2a; color:#fff; border:1px solid #555; border-radius:5px;">
+              <input type="text" id="comment-content-${index}" placeholder="댓글 내용" style="padding:5px; width:200px; margin-right:5px; background-color:#2a2a2a; color:#fff; border:1px solid #555; border-radius:5px;">
+              <button onclick="addCommentUI('${post.key}', ${index})" style="background-color:#4CAF50; color:white; padding:5px 10px; border:none; border-radius:5px;">댓글 등록</button>
+            </div>
+          `;
+          // 댓글 목록
+          let commentsHtml = '';
+          if (post.comments && post.comments.length > 0) {
+            commentsHtml = '<ul style="margin-left:10px;">';
+            post.comments.forEach((comment, cidx) => {
+              commentsHtml += `
+                <li style="margin-bottom:5px;">
+                  <strong style='color:#FFD700;'>${comment.author}</strong>: ${comment.content}
+                  <button onclick="deleteCommentUI('${post.key}', ${cidx})" style="background-color:#DC3545; color:white; padding:2px 7px; border:none; border-radius:5px; margin-left:5px; font-size:12px;">삭제</button>
+                </li>
+              `;
+            });
+            commentsHtml += '</ul>';
+          }
+          detailDiv.innerHTML = `
+            <div style="border: 1px solid #444; padding: 15px; margin-bottom: 10px; border-radius: 5px; background: #2a2a2a;">
+              <span style="font-weight:bold; color:#FFD700; margin-right:8px;">${posts.length - index}</span>
+              <strong style="color:#4CAF50;">${post.author}</strong>
+              <small style="color:#aaa; margin-left:8px;">${dateStr} 조회수: ${post.views || 0}</small><br>
+              ${postContentHtml}
+              <div style="margin-top: 10px;">
+                <button onclick="editPost('${post.key}', ${index})" style="background-color: #007BFF; color: white; padding: 5px 10px; border: none; border-radius: 5px;">수정</button>
+                <button onclick="deletePost('${post.key}')" style="background-color: #DC3545; color: white; padding: 5px 10px; border: none; border-radius: 5px; margin-left: 10px;">삭제</button>
+              </div>
+              <div style="margin-top:15px; border-top:1px solid #333; padding-top:10px;">
+                <span style="color:#4CAF50; font-size:14px;">댓글</span>
+                ${commentForm}
+                ${commentsHtml}
+              </div>
+            </div>
+          `;
+          return detailDiv;
+        }
+
+        // 게시글 불러오기 (실시간)
+        function renderBoard() {
+          const list = document.getElementById("board-list");
+          if (!list) return;
+          onValue(ref(db, 'posts'), (snapshot) => {
+            posts = [];
+            snapshot.forEach(child => {
+              const post = child.val();
+              post.key = child.key;
+              posts.push(post);
+            });
+            renderBoardList();
+          });
+        }
+
+        // 게시글 상세 보기 진입 (조회수 증가)
+        function showPostDetail(key, li, index) {
+          if (selectedPostKey === key) {
+            // 이미 열려있으면 닫기
+            selectedPostKey = null;
+            renderBoardList();
+            return;
+          }
+          selectedPostKey = key;
+          const post = posts.find(p => p.key === key);
+          if (!post) return;
+          // 조회수 증가 (한번만 증가)
+          update(ref(db, `posts/${key}`), { views: (post.views || 0) + 1 });
+          setTimeout(renderBoardList, 200); // DB 반영 후 상세 렌더
+        }
+
+        // 상세 닫기
+        function closeDetail(event) {
+          if (event && event.stopPropagation) event.stopPropagation();
+          selectedPostKey = null;
+          renderBoardList();
+        }
+
+        // 게시글 등록
+        window.addPost = function() {
+          const author = document.getElementById("author").value.trim();
+          const password = document.getElementById("password").value.trim();
+          const content = document.getElementById("content").value.trim();
+          if (!author || !password || !content) {
+            alert("모든 항목을 입력해주세요.");
+            return;
+          }
+          push(ref(db, 'posts'), {
+            author,
+            password,
+            content,
+            comments: [],
+            date: new Date().toISOString(),
+            views: 0
+          });
+          clearInputs();
+        }
+
+        // 게시글 수정 준비
+        window.editPost = function(key, index) {
+          editingKey = key;
+          editingIndex = index;
+          renderBoard();
+        }
+
+        // 게시글 수정
+        window.saveEditPost = function(key, index) {
+          const password = document.getElementById(`edit-password-${index}`).value.trim();
+          const content = document.getElementById(`edit-content-${index}`).value.trim();
+          const post = posts.find(p => p.key === key);
+          if (!post) return;
+          if (post.password !== password) {
+            alert("비밀번호가 일치하지 않습니다.");
+            return;
+          }
+          update(ref(db, `posts/${key}`), { content });
+          editingKey = null;
+          editingIndex = null;
+          renderBoard();
+        }
+
+        // 게시글 삭제
+        window.deletePost = function(key) {
+          const post = posts.find(p => p.key === key);
+          if (!post) return;
+          const inputPw = prompt("관리자 또는 게시글 비밀번호를 입력하세요.");
+          if (inputPw === "admin2025" || inputPw === post.password) {
+            remove(ref(db, `posts/${key}`));
+          } else {
+            alert("비밀번호가 틀렸습니다.");
+          }
+        }
+
+        // 입력창 초기화
+        function clearInputs() {
+          document.getElementById("author").value = "";
+          document.getElementById("password").value = "";
+          document.getElementById("content").value = "";
+        }
+
+        // 댓글 등록 (UI용)
+        window.addCommentUI = function(postKey, postIndex) {
+          const author = document.getElementById(`comment-author-${postIndex}`).value.trim();
+          const password = document.getElementById(`comment-password-${postIndex}`).value.trim();
+          const content = document.getElementById(`comment-content-${postIndex}`).value.trim();
+          if (!author || !password || !content) {
+            alert("모든 댓글 항목을 입력해주세요.");
+            return;
+          }
+          // 기존 댓글 불러오기 (undefined면 빈 배열로)
+          const post = posts[postIndex];
+          const comments = Array.isArray(post.comments) ? [...post.comments] : [];
+          comments.push({ author, password, content });
+          update(ref(db, `posts/${postKey}`), { comments });
+          // 입력창 비우기
+          document.getElementById(`comment-author-${postIndex}`).value = "";
+          document.getElementById(`comment-password-${postIndex}`).value = "";
+          document.getElementById(`comment-content-${postIndex}`).value = "";
+        }
+
+        // 댓글 삭제 (UI용, 비밀번호 확인)
+        window.deleteCommentUI = function(postKey, commentIndex) {
+          const post = posts.find(p => p.key === postKey);
+          if (!post) return;
+          const inputPw = prompt("댓글 비밀번호 또는 관리자 비밀번호를 입력하세요:");
+          if (inputPw === post.comments[commentIndex].password || inputPw === "admin1234") {
+            const comments = [...post.comments];
+            comments.splice(commentIndex, 1);
+            update(ref(db, `posts/${postKey}`), { comments });
+          } else {
+            alert("비밀번호가 일치하지 않습니다.");
+          }
+        }
+
+        // 페이지 로드시 불러오기
+        window.addEventListener("DOMContentLoaded", function() {
+          renderBoard();
+        });
+
+        // 취소 버튼 함수
+        window.cancelEditPost = function() {
+          editingKey = null;
+          editingIndex = null;
+          renderBoard();
+        }
+
+        function increaseView(key) {
+          const post = posts.find(p => p.key === key);
+          if (!post) return;
+          update(ref(db, `posts/${key}`), { views: (post.views || 0) + 1 });
+        }
+
+        function escapeHtml(str) {
+          return str.replace(/[&<>'\"]/g, tag => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+          }[tag]));
+        }
+
+        async function hashPassword(password) {
+          const encoder = new TextEncoder();
+          const data = encoder.encode(password);
+          const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+          return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        window.togglePostForm = function(e) {
+          e.preventDefault();
+          const form = document.getElementById('post-form');
+          form.style.display = (form.style.display === 'none' || form.style.display === '') ? 'block' : 'none';
+        }
+    </script>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>시스메이트 레퍼런스 & 멀티비전 &  LED계산기</title>
+  
+    <style>
+        
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .page {
+            display: none;
+        }
+        .page.active {
+            display: block;
+        }
+        .nav-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .nav-btn {
+            background-color: #007BFF;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .nav-btn:hover {
+            background-color: #0056b3;
+        }
+        .nav-btn.active {
+            background-color: #4CAF50;
+        }
+/* CSS에 추가 */
+.search-container {
+    margin: 20px auto;
+    max-width: 500px;
+    text-align: center;
+}
+.item-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    transition: transform 0.3s ease;
+}
+
+.item-link:hover {
+    transform: translateY(-5px);
+}
+
+.item {
+    cursor: pointer;
+}
+#searchInput {
+    width: 100%;
+    padding: 12px 20px;
+    margin: 8px 0;
+    box-sizing: border-box;
+    border: 2px solid #4CAF50;
+    border-radius: 25px;
+    background-color: #2a2a2a;
+    color: #ffffff;
+    font-size: 16px;
+}
+
+#searchInput:focus {
+    outline: none;
+    border-color: #45a049;
+    box-shadow: 0 0 5px rgba(76, 175, 80, 0.5);
+}
+
+        /* 레퍼런스 페이지 스타일 */
+        .category-content {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+        }
+        .item {
+            background-color: #1e1e1e;
+            border-radius: 10px;
+            padding: 20px;
+            width: 300px;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .item img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 10px;
+        }
+        .item h2 {
+            color: #4CAF50;
+            margin-top: 15px;
+        }
+        .item p {
+            color: #cccccc;
+        }
+
+        /* 계산기 공통 스타일 */
+        .calculator-container {
+            background-color: #1e1e1e;
+            border-radius: 10px;
+            padding: 20px;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+        select, input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #555;
+            border-radius: 5px;
+            background-color: #2a2a2a;
+            color: #ffffff;
+        }
+        .calculator-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        .calculator-btn:hover {
+            background-color: #45a049;
+        }
+        .result {
+            margin-top: 20px;
+            color: #cccccc;
+            font-size: 1.2em;
+        }
+        .visualization {
+            margin: 20px auto;
+            display: grid;
+            gap: 5px;
+            justify-content: center;
+            padding: 10px;
+            max-width: 600px;
+            background-color: #1a1a1a;
+            border: 1px solid #555;
+        }
+        .panel {
+            background-color: #007BFF;
+            border: 1px solid #0056b3;
+            color: white;
+            font-size: 0.8em;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @media (max-width: 600px) {
+            .nav-buttons {
+                flex-direction: column;
+                gap: 8px;
+            }
+            .nav-btn {
+                font-size: 14px;
+                padding: 8px 0;
+                width: 100%;
+                min-width: 0;
+                margin: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        
+        <p style="text-align: center;">SYSMATE Total Solution v1.4 2026.01</p>
+        
+        <!-- 네비게이션 버튼 -->
+        <div class="nav-buttons">
+            <button class="nav-btn active" data-page="reference">레퍼런스</button>
+            <button class="nav-btn" data-page="calculator">멀티비전 계산기</button>
+            <button class="nav-btn" data-page="led-calculator">LED 계산기</button>
+            <button class="nav-btn" data-page="board">게시판</button>
+
+        </div>
+<!-- 네비게이션 버튼 아래에 추가 -->
+<div class="search-container">
+    <input type="text" id="searchInput" placeholder="검색어를 입력하세요..." onkeyup="searchItems()">
+</div>
+        <!-- 레퍼런스 페이지 -->
+        <div class="page active" id="reference-page">
+            <div class="category-content">
+                <a href="https://www.sysmate.co.kr/reference/REC001" target="_blank" class="item-link">
+                    <div class="item">
+                        <img src="https://www.sysmate.co.kr/data/upload/editor/e3afa94e582741329cb08029e7e85e5e.jpg" alt="사이니지 이미지 1">
+                        <h2>사이니지 설치사례</h2>
+                        <p>싱글/스탠드/아웃도어사이니지/더갤러리/전자칠판 설치사례</p>
+                    </div>
+                </a>
+                <a href="https://www.sysmate.co.kr/reference/REC003" target="_blank" class="item-link">
+                    <div class="item">
+                        <img src="https://www.sysmate.co.kr/data/upload/editor/e14a2cd2d6e44a49a65afba4001fe6e3.jpg" alt="사이니지 이미지 2">
+                        <h2>멀티비전 설치사례</h2>
+                        <p>중소형/대형 멀티비전 설치사례</p>
+                    </div>
+                </a>
+                <a href="https://www.sysmate.co.kr/reference/REC002" target="_blank" class="item-link">
+                    <div class="item">
+                        <img src="https://www.sysmate.co.kr/data/upload/editor/4af4ff8347a040e68a64b177118359b4.jpg" alt="사이니지 이미지 3">
+                        <h2>LED디스플레이 설치사례</h2>
+                        <p>실내용/옥외용 LED디스플레이 설치사례</p>
+                    </div>
+                </a>
+                <a href="https://www.sysmate.co.kr/reference/REC004" target="_blank" class="item-link">
+                    <div class="item">
+                        <img src="https://www.sysmate.co.kr/data/upload/editor/37382ecac0e24802b75c7d57181dec00.jpg" alt="사이니지 이미지 3">
+                        <h2>공공조달 설치사례</h2>
+                        <p>이지키오스크/메이저맵/멘탈케어/화이트보드 등 설치사례</p>
+                    </div>
+                </a>
+                <a href="https://www.sysmate.co.kr/reference/REC005" target="_blank" class="item-link">
+                    <div class="item">
+                        <img src="https://www.sysmate.co.kr/data/upload/editor/88f21266629b4412894fa76bc4be820b.jpg" alt="사이니지 이미지 3">
+                        <h2>전자현수막 설치사례</h2>
+                        <p>LED/LCD전자현수막  설치사례</p>
+                    </div>
+                </a>
+                
+                <a href="https://www.sysmate.co.kr/reference/REC006" target="_blank" class="item-link">
+                    <div class="item">
+                        <img src="https://www.sysmate.co.kr/data/upload/editor/e374c98b75a0433f8ae4d9e41a25e9f6.jpg" alt="사이니지 이미지 3">
+                        <h2>전자게시대 설치사례</h2>
+                        <p>LED/LCD전자게시대  설치사례</p>
+                    </div>
+                </a>
+            </div>
+        </div>
+
+        <!-- 멀티비전 계산기 페이지 -->
+        <div class="page" id="calculator-page">
+            <div class="calculator-container">
+                <h1>시스메이트 멀티비전 계산기 v1.1</h1>
+                <hr>
+                <form id="calculator">
+                    <label for="product">제품군 선택:</label>
+                    <select id="product" name="product">
+                        <option value="1">SYS-55ENB-5LW (2.6mm)</option>
+                        <option value="2">SYS-55ENB-7LW (2.6mm)</option>
+                        <option value="3">SYS-55RNB-5LW (0.88mm)</option>
+                        <option value="4">SYS-55RNB-7LW (0.88mm)</option>
+                        
+                    </select>
+
+                    <label for="orientation">화면 방향:</label>
+                    <select id="orientation" name="orientation">
+                        <option value="horizontal">가로</option>
+                        <option value="vertical">세로</option>
+                    </select>
+
+                    <label for="rows">세로 단의 개수:</label>
+                    <input type="number" id="rows" name="rows" min="1" required>
+
+                    <label for="columns">가로 열의 개수:</label>
+                    <input type="number" id="columns" name="columns" min="1" required>
+
+                    <button type="button" class="calculator-btn" onclick="calculateMultiVision()">계산하기</button>
+                </form>
+
+                <div class="result" id="result"></div>
+                <div class="visualization" id="visualization"></div>
+            </div>
+        </div>
+
+                <!-- LED 계산기 페이지 -->
+                <div class="page" id="led-calculator-page">
+                    <div class="calculator-container">
+                        <h1>LED 스크린 사이즈 및 해상도 계산기 </h1>
+                        <hr>
+                        <br>
+                        <form id="led-calculator">
+                            <label for="led-product">제품군 선택:</label>
+                            <select id="led-product" name="product">
+                                <!-- 옵션은 JavaScript로 동적 생성됩니다 -->
+
+
+
+
+
+                                
+                            </select>
+                            <label for="led-rows">세로 단의 개수:</label>
+                            <input type="number" id="led-rows" name="rows" min="1" required>
+                            <label for="led-columns">가로 열의 개수:</label>
+                            <input type="number" id="led-columns" name="columns" min="1" required>
+                            <button type="button" class="calculator-btn" onclick="calculateLEDSize()">계산하기</button>
+                        </form>
+        
+                        <hr>
+                        
+                        <h2>가로/세로 크기로 적합한 제품군 추천</h2>
+                        <label for="width">가로 크기 (mm):</label>
+                        <input type="number" id="width" name="width" min="1" required>
+                        <label for="height">세로 크기 (mm):</label>
+                        <input type="number" id="height" name="height" min="1" required>
+                        <button type="button" class="calculator-btn" onclick="recommendProduct()">추천하기</button>
+                        
+                        <div class="result" id="led-result"></div>
+                        <div class="visualization" id="led-visualization"></div>
+                        <div class="result" id="recommendedProduct"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 게시판 페이지 -->
+<div class="page" id="board-page">
+  <section style="padding: 30px 20px; background: #1e1e1e; color: #fff;">
+    <h2 style="color: #4CAF50; text-align: center;">
+      📋 게시판  <br>
+      <span style="color:#fff; font-size:0.6em;">욕설이나 비방글은 삭제될수 있습니다</span>
+    </h2>
+    <div style="text-align:center; margin-bottom:20px;">
+      <button id="toggle-post-form-btn" onclick="togglePostForm(event)" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 5px;">게시글쓰기</button>
+    </div>
+    <div id="post-form" style="display:none; margin-bottom:20px;">
+      <div style="margin-bottom: 20px;">
+        <input type="text" id="author" placeholder="작성자" style="padding: 10px; width: 200px; margin-right: 10px; background-color: #2a2a2a; color: #fff; border: 1px solid #555; border-radius: 5px;">
+        <input type="password" id="password" placeholder="비밀번호" style="padding: 10px; width: 200px; margin-right: 10px; background-color: #2a2a2a; color: #fff; border: 1px solid #555; border-radius: 5px;">
+      </div>
+      <textarea id="content" placeholder="내용을 입력하세요" rows="4" style="width: 100%; padding: 10px; background-color: #2a2a2a; color: #fff; border: 1px solid #555; border-radius: 5px;"></textarea>
+      <br><br>
+      <button onclick="addPost()" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin-right: 10px;">등록</button>
+    </div>
+    <ul id="board-list" style="list-style: none; padding: 0; margin-top: 30px;"></ul>
+    <div id="board-detail"></div>
+  </section>
+</div>
+        
+            <script>
+                // LED 제품 정보 전역 객체
+                const ledProductsData = {
+                    "COB 1.25": { modelName: "SYS-LDI-12", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.25, powerConsumption: 120, unitPrices: { procurement: 3500000, retail: 0, dealer:0 } },
+                    "GOB 1.25": { modelName: "SYS-L125G-64A1", panelWidth: 640, panelHeight: 480, pixelPitch: 1.25, powerConsumption: 150, unitPrices: { procurement: 3825000, retail: 0, dealer: 0 } },
+                    "GOB 1.53": { modelName: "SYS-L153G-64A1", panelWidth: 640, panelHeight: 480, pixelPitch: 1.53, powerConsumption: 150, unitPrices: { procurement: 2999000, retail: 0, dealer: 0 } },
+                    "GOB 1.86": { modelName: "SYS-L186G-64A1", panelWidth: 640, panelHeight: 480, pixelPitch: 1.86, powerConsumption: 129, unitPrices: { procurement: 2690000, retail: 0, dealer: 0 } },
+                    "GOB 2.5": { modelName: "SYS-L250G-64A1", panelWidth: 640, panelHeight: 480, pixelPitch: 2.5, powerConsumption: 105, unitPrices: { procurement: 1950000, retail: 0, dealer: 0 } },
+                    "SMD 1.53": { modelName: "SYS-L153S-64A1", panelWidth: 640, panelHeight: 480, pixelPitch: 1.53, powerConsumption: 150, unitPrices: { procurement: 2590000, retail:0, dealer:0 } },
+                    "SMD 1.56": { modelName: "SYS-LDI-15", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.56, powerConsumption: 130, unitPrices: { procurement: 1990000, retail: 0, dealer: 0 } },
+                    "SMD 1.56_2": { modelName: "SYS-L156S-60A2", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.56, powerConsumption: 101.3, unitPrices: { procurement: 1187000, retail: 0, dealer: 0 } },
+                    "SMD 1.87": { modelName: "SYS-LDI-18", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.87, powerConsumption: 130, unitPrices: { procurement: 1560000, retail:0, dealer: 0 } },
+                    "SMD 1.87_2": { modelName: "SYS-L187S-60A2", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.87, powerConsumption: 91.9, unitPrices: { procurement: 954000, retail: 0, dealer: 0 } },
+                    "SMD 2.5_1": { modelName: "SYS-L250S-64A1", panelWidth: 640, panelHeight: 480, pixelPitch: 2.5, powerConsumption: 105, unitPrices: { procurement: 1630000, retail:0, dealer: 0 } },
+                    "SMD 2.5_2": { modelName: "SYS-LDI-25", panelWidth: 480, panelHeight: 480, pixelPitch: 2.5, powerConsumption: 80, unitPrices: { procurement: 950000, retail: 0, dealer: 0 } },
+                    "GOB 1.25_2": { modelName: "SYS-L125G-60A2", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.25, powerConsumption: 121.5, unitPrices: { procurement: 1879000, retail: 0, dealer: 0 } },
+                    "GOB 1.56": { modelName: "SYS-L156G-60A2", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.56, powerConsumption: 101.3, unitPrices: { procurement: 1227000, retail: 0, dealer: 0 } },
+                    "GOB 1.87": { modelName: "SYS-L187G-60A2", panelWidth: 600, panelHeight: 337.5, pixelPitch: 1.87, powerConsumption: 91.1, unitPrices: { procurement: 994000, retail: 0, dealer: 0 } }
+                };
+
+                // LED 제품 선택 옵션 동적 생성
+                function initLEDProductOptions() {
+                    const select = document.getElementById("led-product");
+                    if (!select) return;
+                    
+                    select.innerHTML = ""; // 기존 옵션 제거
+                    
+                    // 제품명 매핑
+                    const productNameMap = {
+                        "COB 1.25": "COB P1.25",
+                        "GOB 1.25": "GOB P1.25",
+                        "GOB 1.25_2": "GOB P1.25",
+                        "GOB 1.53": "GOB P1.53",
+                        "GOB 1.56": "GOB P1.56",
+                        "GOB 1.86": "GOB P1.86",
+                        "GOB 1.87": "GOB P1.87",
+                        "GOB 2.5": "GOB P2.5",
+                        "SMD 1.53": "SMD P1.53",
+                        "SMD 1.56": "SMD P1.56",
+                        "SMD 1.56_2": "SMD P1.56",
+                        "SMD 1.87": "SMD P1.87",
+                        "SMD 1.87_2": "SMD P1.87",
+                        "SMD 2.5_1": "SMD P2.5",
+                        "SMD 2.5_2": "SMD P2.5"
+                    };
+                    
+                    for (const [key, value] of Object.entries(ledProductsData)) {
+                        const option = document.createElement("option");
+                        option.value = key;
+                        
+                        // 옵션 텍스트 생성: 제품명 (크기) - 모델명
+                        const productName = productNameMap[key] || key;
+                        const sizeText = `(${value.panelWidth}mm x ${value.panelHeight}mm)`;
+                        const modelText = value.modelName ? ` - ${value.modelName}` : "";
+                        option.textContent = `${productName} ${sizeText}${modelText}`;
+                        
+                        select.appendChild(option);
+                    }
+                }
+                
+                // JavaScript에 추가
+function searchItems() {
+    const searchValue = document.getElementById('searchInput').value.toLowerCase();
+    const items = document.getElementsByClassName('item');
+
+    for (let item of items) {
+        const title = item.querySelector('h2').innerText.toLowerCase();
+        const description = item.querySelector('p').innerText.toLowerCase();
+        
+        if (title.includes(searchValue) || description.includes(searchValue)) {
+            item.style.display = '';
+        } else {
+            item.style.display = 'none';
+        }
+    }
+}
+                
+                             
+                
+                // 네비게이션 버튼 이벤트
+                const navButtons = document.querySelectorAll('.nav-btn');
+                const pages = document.querySelectorAll('.page');
+        
+                navButtons.forEach(button => {
+                    button.addEventListener('click', function() {
+                        const pageName = this.dataset.page;
+                        navButtons.forEach(btn => btn.classList.remove('active'));
+                        pages.forEach(page => page.classList.remove('active'));
+                        this.classList.add('active');
+                        document.getElementById(`${pageName}-page`).classList.add('active');
+                    });
+                });
+
+                // 페이지 로드 시 LED 제품 옵션 초기화
+                window.addEventListener("DOMContentLoaded", function() {
+                    initLEDProductOptions();
+                });
+        
+                // 멀티비전 계산기 함수
+                function calculateMultiVision() {
+                    const product = document.getElementById("product").value;
+                    const orientation = document.getElementById("orientation").value;
+                    const rowCount = parseInt(document.getElementById("rows").value, 10);
+                    const columnCount = parseInt(document.getElementById("columns").value, 10);
+        
+                    const products = {
+                        1: { name: "SYS-55ENB-5LW", width: 1212.2, height: 683, weight: 19.6, power: 187.5, price: 4150000 },
+                        2: { name: "SYS-55ENB-7LW", width: 1212.2, height: 683, weight: 19.7, power: 242.0, price: 4950000 },
+                        3: { name: "SYS-55RNB-5LW", width: 1210.51, height: 681.22, weight: 18.5, power: 233.5, price: 5900000 },
+                        4: { name: "SYS-55RNB-7LW", width: 1210.51, height: 681.22, weight: 18.1, power: 233.5, price: 7200000 }
+                    };
+        
+                    const selectedProduct = products[product];
+                    const totalRows = rowCount;
+                    const totalColumns = columnCount;
+        
+                    const totalWidth = orientation === "horizontal"
+                        ? selectedProduct.width * totalColumns
+                        : selectedProduct.height * totalColumns;
+                    const totalHeight = orientation === "horizontal"
+                        ? selectedProduct.height * totalRows
+                        : selectedProduct.width * totalRows;
+        
+                    const totalWeight = (selectedProduct.weight * totalRows * totalColumns).toFixed(1);
+                    const totalPower = (selectedProduct.power * totalRows * totalColumns).toFixed(1);
+                    const totalPrice = (selectedProduct.price * totalRows * totalColumns).toLocaleString("ko-KR");
+                    const totalWidthInInches = (totalWidth * 0.03937).toFixed(2);
+                    const totalHeightInInches = (totalHeight * 0.03937).toFixed(2);
+                    const diagonalInches = Math.sqrt(totalWidth ** 2 + totalHeight ** 2) * 0.03937;
+        
+                    function calculateAspectRatio(width, height) {
+                        const aspectRatio = width / height;
+                        const standardWidth = 16;
+                        const standardHeight = 9;
+                        const scaledHeight = standardWidth / aspectRatio;
+                        return {
+                            aspectRatioValue: aspectRatio.toFixed(2),
+                            aspectRatioText: `${standardWidth} : ${scaledHeight.toFixed(1)}`
+                        };
+                    }
+        
+                    const { aspectRatioValue, aspectRatioText } = calculateAspectRatio(totalWidth, totalHeight);
+        
+                    document.getElementById("result").innerHTML = `
+                        <p>화면 방향: ${orientation === "horizontal" ? "가로" : "세로"}</p>
+                        <p>제품명: ${selectedProduct.name}</p>
+                        <p>전체 크기: ${totalWidth.toFixed(1)} mm x ${totalHeight.toFixed(1)} mm</p>
+                        <p>전체 크기(인치): ${totalWidthInInches} in x ${totalHeightInInches} in</p>
+                        <p>대각선 길이: ${diagonalInches.toFixed(2)} in</p>
+                        <p>화면 비율(실제): ${aspectRatioValue} : 1</p>
+                        <p>화면 비율(16:9 기준): ${aspectRatioText}</p>
+                        <p>전체 무게: ${totalWeight} kg</p>
+                        <p>최대소비 전력: ${totalPower} W</p>
+                        <p>조달가: ₩ ${totalPrice}</p>
+                    `;
+        
+                    renderVisualization(totalRows, totalColumns, orientation);
+                }
+        
+                function renderVisualization(rows, columns, orientation) {
+                    const visualization = document.getElementById("visualization");
+                    visualization.innerHTML = "";
+                    visualization.style.gridTemplateColumns = `repeat(${columns}, auto)`;
+        
+                    const panelWidth = "60px";
+                    const panelHeight = "34px";
+        
+                    for (let i = 0; i < rows * columns; i++) {
+                        const panel = document.createElement("div");
+                        panel.className = "panel";
+                        if (orientation === "vertical") {
+                            panel.style.width = panelHeight;
+                            panel.style.height = panelWidth;
+                        } else {
+                            panel.style.width = panelWidth;
+                            panel.style.height = panelHeight;
+                        }
+                        panel.innerText = i + 1;
+                        visualization.appendChild(panel);
+                    }
+                }
+        
+                // LED 계산기 함수
+                function calculateLEDSize() {
+                    const product = document.getElementById("led-product").value;
+                    const rowCount = parseInt(document.getElementById("led-rows").value, 10);
+                    const columnCount = parseInt(document.getElementById("led-columns").value, 10);
+        
+                    // 제품군 정보 객체 (전역 객체 사용)
+                    const ledProducts = ledProductsData;
+        
+                    const info = ledProducts[product];
+        
+                    if (info && rowCount && columnCount) {
+                        const totalPanels = rowCount * columnCount;
+                        const totalWidth = info.panelWidth * columnCount;
+                        const totalHeight = info.panelHeight * rowCount;
+        
+                        const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+                        const divisor = gcd(totalWidth, totalHeight);
+                        const aspectWidth = totalWidth / divisor;
+                        const aspectHeight = totalHeight / divisor;
+        
+                        let standardAspectRatio = `${aspectWidth}:${aspectHeight}`;
+                        if (aspectWidth / aspectHeight > 1.7 && aspectWidth / aspectHeight < 1.8) {
+                            standardAspectRatio = "16:9";
+                        } else if (aspectWidth / aspectHeight > 1.3 && aspectWidth / aspectHeight < 1.4) {
+                            standardAspectRatio = "4:3";
+                        }
+        
+                        const totalArea = (totalWidth * totalHeight) / 1000000;
+                        const resolutionWidth = Math.floor(totalWidth / info.pixelPitch);
+                        const resolutionHeight = Math.floor(totalHeight / info.pixelPitch);
+                        const diagonalInInches = (Math.sqrt(Math.pow(totalWidth / 25.4, 2) + Math.pow(totalHeight / 25.4, 2))).toFixed(2);
+                        const totalPower = totalPanels * info.powerConsumption;
+                        const totalPrices = {
+                            procurement: totalPanels * info.unitPrices.procurement,
+                            retail: totalPanels * info.unitPrices.retail,
+                            dealer: totalPanels * info.unitPrices.dealer
+                        };
+        
+                        renderLEDVisualization(rowCount, columnCount, product);
+        
+                        document.getElementById("led-result").innerHTML = ` 
+                            <p>제품군: ${product}</p>
+                            ${info.modelName ? `<p>모델명: ${info.modelName}</p>` : ''}
+                            <p>전체 가로 크기: ${totalWidth} mm</p>
+                            <p>전체 세로 크기: ${totalHeight} mm</p>
+                            <p>전체 면적: ${totalArea.toFixed(2)} m²</p>
+                            <p>화면 비율: ${standardAspectRatio}</p>
+                            <p>해상도: ${resolutionWidth} x ${resolutionHeight} (픽셀)</p>
+                            <p>대각선 길이: ${diagonalInInches} 인치</p>
+                            <p>최대소비전력: ${totalPower} W</p>
+                            <p>조달가: ₩${totalPrices.procurement.toLocaleString()}</p>
+                            ${totalPrices.retail > 0 ? `<p>민수(소비자가): ₩${totalPrices.retail.toLocaleString()}</p>` : ''}
+                            ${totalPrices.dealer > 0 ? `<p>민수(대리점가): ₩${totalPrices.dealer.toLocaleString()}</p>` : ''}
+                        `;
+                    } else {
+                        document.getElementById("led-result").innerHTML = "<p>값을 모두 입력해주세요.</p>";
+                        document.getElementById("led-visualization").innerHTML = "";
+                    }
+                }
+        
+                function recommendProduct() {
+                    const width = parseInt(document.getElementById("width").value, 10);
+                    const height = parseInt(document.getElementById("height").value, 10);
+                    const selectedProduct = document.getElementById("led-product").value;
+        
+                    // 제품군 정보 객체 (전역 객체 사용)
+                    const ledProducts = ledProductsData;
+        
+                    if (!width || !height) {
+                        document.getElementById("recommendedProduct").innerHTML = "<p>가로 및 세로 크기를 입력해주세요.</p>";
+                        return;
+                    }
+        
+                    const info = ledProducts[selectedProduct];
+                    if (!info) {
+                        document.getElementById("recommendedProduct").innerHTML = "<p>제품군을 선택해주세요.</p>";
+                        return;
+                    }
+        
+                    // 필요한 패널 수 계산
+                    const columns = Math.ceil(width / info.panelWidth);
+                    const rows = Math.ceil(height / info.panelHeight);
+                    const totalWidth = columns * info.panelWidth;
+                    const totalHeight = rows * info.panelHeight;
+                    const widthDiff = Math.abs(totalWidth - width);
+                    const heightDiff = Math.abs(totalHeight - height);
+        
+                    document.getElementById("recommendedProduct").innerHTML = 
+                        `<p>선택된 제품 ${selectedProduct} 기준:<br>
+                        ${info.modelName ? `모델명: ${info.modelName}<br>` : ''}
+                        필요한 크기: ${width}mm x ${height}mm<br>
+                        실제 설치 크기: ${totalWidth}mm x ${totalHeight}mm<br>
+                        배열: ${rows}단 ${columns}열<br>
+                        오차: 가로 ${widthDiff}mm, 세로 ${heightDiff}mm</p>`;
+                }
+        
+                function renderLEDVisualization(rows, columns, product) {
+                    const visualization = document.getElementById("led-visualization");
+                    visualization.innerHTML = "";
+                    visualization.style.gridTemplateColumns = `repeat(${columns}, auto)`;
+        
+                    // SMD 2.5_2 (정사각형)는 40x40, 나머지는 60x34
+                    let panelWidth = "60px";
+                    let panelHeight = "34px";
+                    if ( product === "SMD 2.5_2") {
+                        panelWidth = "40px";
+                        panelHeight = "40px";
+                    }
+        
+                    for (let i = 0; i < rows * columns; i++) {
+                        const panel = document.createElement("div");
+                        panel.className = "panel";
+                        panel.style.width = panelWidth;
+                        panel.style.height = panelHeight;
+                        panel.innerText = i + 1;
+                        visualization.appendChild(panel);
+                    }
+                }
+
+            </script>
+        </body>
+        </html>

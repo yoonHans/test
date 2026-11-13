@@ -1,5 +1,13 @@
 <!DOCTYPE html>
 <html lang="ko" data-theme="dark">
+<meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'">
+<style>
+  html body > :not(#service-discontinuation-notice) { display: none !important; }
+  html body { margin: 0 !important; min-height: 100vh; display: grid !important; place-items: center; background: #101522 !important; color: #f6f8fc !important; }
+  #service-discontinuation-notice { box-sizing: border-box; margin: 24px; padding: clamp(24px, 6vw, 56px); text-align: center; background: #1a2234; border: 1px solid #36415a; border-radius: 20px; font-family: system-ui, "Malgun Gothic", sans-serif; }
+  #service-discontinuation-notice h1 { margin: 0; color: #f6f8fc; font-size: clamp(1.65rem, 5vw, 2.5rem); }
+  #service-discontinuation-notice p { margin: 16px 0 0; color: #ccd7eb; font-size: 1.125rem; }
+</style>
     <script type="module">
         // Import the functions you need from the SDKs you need
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
@@ -1020,6 +1028,10 @@
     </style>
 </head>
 <body>
+<main id="service-discontinuation-notice" aria-labelledby="service-discontinuation-heading">
+  <h1 id="service-discontinuation-heading">서비스 중단합니다</h1>
+  <p>시뮬레이터 사용해주세요</p>
+</main>
     <div class="container">
 
         <div class="app-header">
